@@ -1,0 +1,15 @@
+[[media]]
+file = "night.json.gz"
+name = "The crowd closes in"
+
+[[media]]
+file = "night.png"
+name = "Tools hold the circle"
+
+[[media]]
+file = "almanac.png"
+name = "The almanac"
+
+[[media]]
+file = "title.png"
+name = "Light the lamp"
