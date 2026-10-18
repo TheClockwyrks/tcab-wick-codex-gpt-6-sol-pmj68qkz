@@ -111,4 +111,24 @@ describe("Wick simulation", () => {
     s = frame(s);
     expect(s.screen).toBe("dawn");
   });
+
+  it("holds a full spawn cap and restarts spawning at a new window", async () => {
+    const { initial, debug, frame } = await harness();
+    let s = debug.setScreen(initial, "playing");
+    s = debug.setEvents(s, false);
+    s = debug.setWeaponFire(s, false);
+    s = debug.setEnemyMotion(s, false);
+    for (let i = 0; i < 20; i++) s = debug.spawnEnemy(s, "moth", 100, 100);
+    s = debug.setNextSpawnType(s, "moth");
+    s = frame(s);
+    expect(s.run.enemies).toHaveLength(20);
+    expect(s.run.spawnTimer).toBe(0);
+    expect(s.run.nextSpawnType).toBe("moth");
+    s = debug.clearEnemies(s);
+    s = debug.setTick(s, 30 * TICK_HZ - 1);
+    s = debug.setSpawnTimer(s, 10);
+    s = frame(s);
+    expect(s.run.enemies).toHaveLength(1);
+    expect(s.run.spawnTimer).toBe(0.8);
+  });
 });

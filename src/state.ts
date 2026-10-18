@@ -94,6 +94,8 @@ export interface ZoneState {
   readonly damage: number;
   readonly ttl: number | null;
   readonly hits: readonly EnemyHit[];
+  readonly orbitAngle?: number;
+  readonly lastPulseTick?: number | null;
 }
 export interface GemState {
   readonly id: number;

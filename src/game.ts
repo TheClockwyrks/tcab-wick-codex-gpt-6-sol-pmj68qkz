@@ -305,6 +305,8 @@ function zone(
         damage,
         ttl,
         hits: [],
+        ...(kind === "lantern" ? { orbitAngle: 0 } : {}),
+        ...(kind === "puddle" ? { lastPulseTick: null } : {}),
         ...(width === undefined ? {} : { width, height }),
       },
     ],
@@ -504,6 +506,7 @@ function tick(s: WickState, api: UpdateApi, dx: number, dy: number): WickState {
       };
     }),
   };
+  const firedWeapons = new Set<WeaponId>();
   if (s.weaponFire) {
     const weapons = [];
     for (const w of r.weapons) {
@@ -511,6 +514,7 @@ function tick(s: WickState, api: UpdateApi, dx: number, dy: number): WickState {
       let cd = timer(w.cooldown);
       if (cd === 0 && w.id !== "chandelier") {
         r = fire(r, w.id, w.level);
+        firedWeapons.add(w.id);
         cd =
           Math.max(C.MIN_COOLDOWN, v.cooldown * st.cooldown) +
           (w.id === "lantern" ? (v as C.OrbitLevel).duration : 0);
@@ -555,6 +559,12 @@ function tick(s: WickState, api: UpdateApi, dx: number, dy: number): WickState {
       );
   }
   const chand = r.weapons.some((w) => w.id === "chandelier");
+  if (
+    chand &&
+    r.zones.filter((z) => z.weapon === "chandelier").length !==
+      C.CHANDELIER_STATS.amount + st.amount
+  )
+    r = { ...r, zones: r.zones.filter((z) => z.weapon !== "chandelier") };
   if (chand && !r.zones.some((z) => z.weapon === "chandelier"))
     for (let i = 0; i < C.CHANDELIER_STATS.amount + st.amount; i++)
       r = zone(
@@ -606,7 +616,8 @@ function tick(s: WickState, api: UpdateApi, dx: number, dy: number): WickState {
     zones: r.zones.flatMap((z) => {
       if (prevZ.has(z.id) && z.ttl !== null && timer(z.ttl) === 0) return [];
       let x = z.x,
-        y = z.y;
+        y = z.y,
+        orbitAngle = z.orbitAngle;
       if (z.kind === "lantern") {
         const group = r.zones.filter(
             (a) => a.kind === "lantern" && a.weapon === z.weapon,
@@ -619,17 +630,27 @@ function tick(s: WickState, api: UpdateApi, dx: number, dy: number): WickState {
                   z.weapon,
                   r.weapons.find((w) => w.id === z.weapon)?.level ?? 1,
                 ) as C.OrbitLevel),
-          a =
-            (r.tick * C.TICK_DT * C.LANTERN_ANGULAR_SPEED * Math.PI) / 180 +
-            (i * 2 * Math.PI) / group.length;
-        x = p.x + Math.cos(a) * v.orbit * st.area;
-        y = p.y + Math.sin(a) * v.orbit * st.area;
+          initialAngle = (i * 2 * Math.PI) / group.length;
+        orbitAngle = prevZ.has(z.id)
+          ? (z.orbitAngle ?? initialAngle)
+          : initialAngle;
+        if (prevZ.has(z.id) && s.effectMotion)
+          orbitAngle += ((C.LANTERN_ANGULAR_SPEED * Math.PI) / 180) * C.TICK_DT;
+        x = p.x + Math.cos(orbitAngle) * v.orbit * st.area;
+        y = p.y + Math.sin(orbitAngle) * v.orbit * st.area;
       }
       return [
         {
           ...z,
           x,
           y,
+          ...(z.kind === "lantern" ? { orbitAngle } : {}),
+          ...(z.weapon === "chandelier"
+            ? {
+                radius: C.CHANDELIER_STATS.radius * st.area,
+                damage: C.CHANDELIER_STATS.damage * st.damage,
+              }
+            : {}),
           ttl: z.ttl === null ? null : prevZ.has(z.id) ? timer(z.ttl) : z.ttl,
           hits: z.hits
             .map((h) => ({ ...h, cooldown: timer(h.cooldown) }))
@@ -683,16 +704,15 @@ function tick(s: WickState, api: UpdateApi, dx: number, dy: number): WickState {
   for (const z of [...r.zones]) {
     const pulse =
       z.kind === "aura"
-        ? r.weapons.find((w) => w.id === z.weapon)?.cooldown ===
-          Math.max(C.MIN_COOLDOWN, row(z.weapon, 1).cooldown * st.cooldown)
+        ? firedWeapons.has(z.weapon)
         : z.kind === "puddle"
-          ? !prevZ.has(z.id) ||
-            r.tick %
+          ? z.lastPulseTick === null ||
+            z.lastPulseTick === undefined ||
+            r.tick - z.lastPulseTick >=
               Math.round(
                 (z.weapon === "blaze" ? C.BLAZE_PULSE : C.OIL_PULSE) *
                   C.TICK_HZ,
-              ) ===
-              0
+              )
           : z.kind === "lantern" || !prevZ.has(z.id);
     if (!pulse) continue;
     const hits = [...z.hits];
@@ -706,6 +726,7 @@ function tick(s: WickState, api: UpdateApi, dx: number, dy: number): WickState {
             Math.abs(e.y - z.y) < (z.height ?? 0) / 2 + C.ENEMIES[e.type].radius
           : dist(z, e) < z.radius + C.ENEMIES[e.type].radius;
       if (overlap) {
+        const beforeHp = r.enemies.find((a) => a.id === e.id)?.hp ?? e.hp;
         hitEnemy(e.id, z.damage);
         if (z.kind === "lantern")
           hits.push({ enemy: e.id, cooldown: C.LANTERN_REHIT });
@@ -717,11 +738,27 @@ function tick(s: WickState, api: UpdateApi, dx: number, dy: number): WickState {
               hp: Math.min(st.maxHp, r.player.hp + C.PYRE_HEAL),
             },
           };
+        if (z.weapon === "corona" && beforeHp > 0 && beforeHp <= z.damage)
+          r = {
+            ...r,
+            player: {
+              ...r.player,
+              hp: Math.min(st.maxHp, r.player.hp + C.CORONA_HEAL),
+            },
+          };
       }
     }
     r = {
       ...r,
-      zones: r.zones.map((a) => (a.id === z.id ? { ...a, hits } : a)),
+      zones: r.zones.map((a) =>
+        a.id === z.id
+          ? {
+              ...a,
+              hits,
+              ...(z.kind === "puddle" ? { lastPulseTick: r.tick } : {}),
+            }
+          : a,
+      ),
     };
   }
   const dead = r.enemies.filter((e) => e.hp <= 0);
@@ -808,6 +845,7 @@ function tick(s: WickState, api: UpdateApi, dx: number, dy: number): WickState {
     } else {
       chest = true;
       r = openChest(r);
+      if (r.chestResult?.kind === "evolve") api.audio.play(C.CUES.evolve);
     }
   }
   const oldGems = new Set(s.run.gems.map((g) => g.id));
@@ -873,19 +911,24 @@ function tick(s: WickState, api: UpdateApi, dx: number, dy: number): WickState {
         }
       }
   if (s.spawning) {
-    const win =
-        C.SPAWN_WINDOWS[
-          Math.min(19, Math.floor(r.tick / C.TICK_HZ / C.SPAWN_WINDOW))
-        ],
-      cd = timer(r.spawnTimer),
+    const windowIndex = Math.min(
+      19,
+      Math.floor(r.tick / C.TICK_HZ / C.SPAWN_WINDOW),
+    );
+    const previousWindow = Math.min(
+      19,
+      Math.floor(s.run.tick / C.TICK_HZ / C.SPAWN_WINDOW),
+    );
+    const win = C.SPAWN_WINDOWS[windowIndex],
+      cd = timer(windowIndex === previousWindow ? r.spawnTimer : 0),
       alive = r.enemies.filter(
         (e) => C.ENEMIES[e.type].rank === "common" && e.type !== "gnat",
       ).length;
-    if (cd === 0) {
+    if (cd === 0 && alive < win.cap) {
       let type = r.nextSpawnType;
       if (!type || !win.types.includes(type)) type = random(win.types);
       r = { ...r, nextSpawnType: null, spawnTimer: win.interval };
-      if (alive < win.cap) r = angleSpawn(r, type);
+      r = angleSpawn(r, type);
     } else r = { ...r, spawnTimer: cd };
   }
   if (hit) api.audio.play(C.CUES.hit);
@@ -1107,6 +1150,14 @@ const debug: WickDebugApi = {
       progression: a.progression,
       run: {
         ...reported,
+        zones: r.zones.map((z) => {
+          const {
+            orbitAngle: _orbitAngle,
+            lastPulseTick: _lastPulseTick,
+            ...visible
+          } = z;
+          return visible;
+        }),
         time: r.tick / C.TICK_HZ,
         xpToNext: xpNext(r),
         maxHp: st.maxHp,
@@ -1414,7 +1465,9 @@ function select(s: WickState, api: UpdateApi, index: number): WickState {
   }
   if (s.screen === "levelup") {
     api.audio.play(C.CUES.choose);
-    return choose(s, index);
+    const next = choose(s, index);
+    if (next.screen === "levelup") api.audio.play(C.CUES.levelUp);
+    return next;
   }
   if (s.screen === "chest" || s.screen === "howto")
     return {
